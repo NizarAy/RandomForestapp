@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Random Forest Prediction</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Water Quality Prediction</h1>
+    <p>Prediksi klasifikasi (Keruh/Jernih) berdasarkan data fitur.</p>
+
+    <!-- Form Input Data -->
+    <form id="predictionForm">
+        <label for="temperature">Temperature (°C):</label>
+        <input type="number" id="temperature" name="temperature" step="0.1" required><br><br>
+
+        <label for="ph">pH:</label>
+        <input type="number" id="ph" name="ph" step="0.1" required><br><br>
+
+        <label for="turbidity">Turbidity (NTU):</label>
+        <input type="number" id="turbidity" name="turbidity" step="0.1" required><br><br>
+
+        <button type="submit">Predict</button>
+    </form>
+
+    <p id="statusMessage"></p> <!-- Status message -->
+
+    <br>
+    <!-- Tempat Grafik -->
+    <canvas id="predictionChart" width="400" height="200"></canvas>
+
+    <script>
+        // URL backend Flask
+        const backendUrl = 'http://127.0.0.1:5000/predict'; // Ganti dengan URL backend Anda jika diperlukan
+    
+        // Form submit handler
+        document.getElementById('predictionForm').addEventListener('submit', async function(event) {
+            event.preventDefault(); // Mencegah reload halaman
+    
+            // Ambil data dari form
+            const formData = {
+                temperature: parseFloat(document.getElementById('temperature').value),
+                ph: parseFloat(document.getElementById('ph').value),
+                turbidity: parseFloat(document.getElementAById('turbidity').value),
+            };
+    
+            // Ubah status menjadi 'Processing...'
+            document.getElementById('statusMessage').textContent = 'Processing...';
+    
+            try {
+                // Kirim data ke backend Flask
+                const response = await fetch(backendUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(formData)
+                });
+    
+                // Periksa status respons
+                if (!response.ok) {
+                    throw new Error('Gagal mendapatkan respons dari backend');
+                }
+    
+                // Terima hasil prediksi dari backend
+                const prediction = await response.json();
+    
+                // Cek jika respons memiliki label
+                if (prediction && prediction.label) {
+                    console.log('Prediction:', prediction);
+                    // Tampilkan hasil prediksi di grafik
+                    displayChart(prediction.label);
+                    document.getElementById('statusMessage').textContent = `Hasil prediksi: ${prediction.label}`;
+                } else {
+                    console.error('Respons tidak mengandung label');
+                    alert('Terjadi kesalahan pada backend.');
+                }
+    
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Gagal melakukan prediksi. Periksa koneksi ke backend.');
+            } finally {
+                // Mengubah status setelah prediksi selesai
+                document.getElementById('statusMessage').textContent = '';
+            }
+        });
+    
+        // Fungsi untuk menampilkan hasil prediksi di grafik
+        function displayChart(predictedLabel) {
+            const ctx = document.getElementById('predictionChart').getContext('2d');
+            
+            const value = predictedLabel === 'Keruh' ? 0 : 1;
+            const chartData = {
+                labels: ['Keruh', 'Jernih'],
+                datasets: [{
+                    label: 'Hasil Prediksi',
+                    data: [value === 0 ? 1 : 0, value === 1 ? 1 : 0],
+                    backgroundColor: ['rgba(255, 99, 132, 0.2)', 'rgba(75, 192, 192, 0.2)'],
+                    borderColor: ['rgba(255, 99, 132, 1)', 'rgba(75, 192, 192, 1)'],
+                    borderWidth: 1
+                }]
+            };
+    
+            new Chart(ctx, {
+                type: 'bar',
+                data: chartData,
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1,
+                                max: 1,
+                                callback: function(value) {
+                                    return value === 0 ? 'Keruh' : 'Jernih';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+    
+</body>
+</html>
