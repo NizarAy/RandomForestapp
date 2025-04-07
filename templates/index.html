@@ -39,6 +39,13 @@
 
         <button type="submit">Predict</button>
     </form>
+    <button id="getRealtimeDataButton" type="button">Ambil Data Realtime dari Firebase</button>
+    <p id="firebaseStatusMessage"></p>
+    <label>
+        <input type="checkbox" id="autoRefreshToggle">
+        Auto-refresh setiap 10 detik
+    </label>
+    
 
     <br>
     <div class="container">
@@ -74,6 +81,80 @@
     </div>
 
     <script>
+        let classificationChart;
+        let regressionChart;
+        let lastFetchedTimestamp = null;
+    
+        document.getElementById('getRealtimeDataButton').addEventListener('click', async function () {
+            const statusMessage = document.getElementById('firebaseStatusMessage');
+            statusMessage.textContent = 'Mengambil data dari Firebase...';
+    
+            try {
+                const response = await fetch('http://127.0.0.1:5000/firebase-data');
+                if (!response.ok) throw new Error('Gagal mengambil data dari Firebase.');
+    
+                const result = await response.json();
+                console.log('Data dari backend:', result);
+    
+                if (result.timestamp === lastFetchedTimestamp) {
+                    statusMessage.textContent = 'Data belum berubah.';
+                    return;
+                }
+    
+                lastFetchedTimestamp = result.timestamp;
+                const raw = result.raw_data;
+                const time = new Date().toLocaleTimeString();
+    
+                // Log ke tabel
+                const table = document.getElementById('dataLogTable').querySelector('tbody');
+                const newRow = table.insertRow();
+                newRow.innerHTML = `
+                    <td>${time}</td>
+                    <td>${raw.suhu ?? raw.temperature ?? '-'}</td>
+                    <td>${raw.ph ?? '-'}</td>
+                    <td>${raw.kekeruhan ?? raw.turbidity ?? '-'}</td>
+                    <td>${result.classification ?? '-'}</td>
+                    <td>${result.regression ?? '-'}</td>
+                `;
+    
+                // Grafik klasifikasi
+                if (typeof classificationChart !== 'undefined' && result.classification) {
+                    classificationChart.data.labels.push(time);
+                    classificationChart.data.datasets[0].data.push(result.classification === 'Keruh' ? 0 : 1);
+                    classificationChart.update();
+                    document.getElementById('statusMessage').textContent = `Klasifikasi Firebase: ${result.classification}`;
+                }
+    
+                // Grafik regresi
+                if (typeof regressionChart !== 'undefined' && result.regression !== undefined) {
+                    regressionChart.data.labels.push(time);
+                    regressionChart.data.datasets[0].data.push(result.regression);
+                    regressionChart.update();
+                    document.getElementById('regressionStatusMessage').textContent = `Regresi Firebase: ${result.regression}`;
+                }
+    
+                statusMessage.textContent = `Data berhasil diambil (${result.timestamp})`;
+            } catch (error) {
+                console.error('Terjadi kesalahan:', error);
+                statusMessage.textContent = 'Gagal ambil data dari Firebase.';
+            } finally {
+                setTimeout(() => { statusMessage.textContent = ''; }, 5000);
+            }
+        });
+    
+        let autoRefreshInterval = null;
+    
+        document.getElementById('autoRefreshToggle').addEventListener('change', function () {
+            if (this.checked) {
+                autoRefreshInterval = setInterval(() => {
+                    document.getElementById('getRealtimeDataButton').click();
+                }, 10000);
+            } else {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        });
+
         document.addEventListener('DOMContentLoaded', () => {
             const regressionUrl = 'http://127.0.0.1:5000/predict-regression';
             const regression30DaysUrl = 'http://127.0.0.1:5000/predict-30-days-regression';
@@ -296,5 +377,24 @@
                         });
         });
     </script>
+    <div class="box">
+        <h2>Log Data Realtime</h2>
+        <table border="1" id="dataLogTable">
+            <thead>
+                <tr>
+                    <th>Waktu</th>
+                    <th>Temperature (°C)</th>
+                    <th>pH</th>
+                    <th>Turbidity (NTU)</th>
+                    <th>Klasifikasi</th>
+                    <th>Regresi</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Data akan ditambahkan di sini -->
+            </tbody>
+        </table>
+    </div>
+    
 </body>
 </html>

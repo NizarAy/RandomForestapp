@@ -2,3 +2,5 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+templates/index2.html
+templates/index3.html

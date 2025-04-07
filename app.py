@@ -3,6 +3,10 @@ import joblib
 import numpy as np
 import pandas as pd
 import logging
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+from datetime import datetime
 
 # Load model klasifikasi
 try:
@@ -19,6 +23,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Inisialisasi Flask
 app = Flask(__name__)
+
+cred = credentials.Certificate("rf-bioflok-firebase-adminsdk-fbsvc-617560ca39.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://rf-bioflok-default-rtdb.asia-southeast1.firebasedatabase.app/sensor.json'
+})
+
 
 # Endpoint untuk halaman utama
 @app.route('/', methods=['GET', 'POST'])
@@ -56,6 +66,37 @@ def home():
 
     # Jika metode GET, tampilkan halaman HTML
     return render_template('index.html')
+
+
+
+@app.route('/firebase-data', methods=['GET'])
+def get_firebase_data():
+    try:
+        ref = db.reference('sensor')
+        data = ref.get()
+
+        if not data:
+            return jsonify({'error': 'Data kosong.'}), 404
+
+        features = pd.DataFrame([[data['suhu'], data['ph'], data['kekeruhan']]],
+                                columns=['temperature', 'ph', 'turbidity'])
+
+        classification_prediction = classification_model.predict(features)[0]
+        regression_prediction = regression_model.predict(features)[0]
+
+        result = {
+            'raw_data': data,
+            'classification': str(classification_prediction),
+            'regression': round(float(regression_prediction), 2),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+
+        print("Response to frontend:", json.dumps(result, indent=2))  # debug ke terminal
+        return jsonify(result)
+
+    except Exception as e:
+        logging.error(f"Error saat mengambil data dari Firebase: {e}", exc_info=True)
+        return jsonify({'error': 'Gagal ambil data dari Firebase'}), 500
 
 # Endpoint untuk prediksi klasifikasi
 @app.route('/predict', methods=['POST'])
