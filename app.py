@@ -1,4 +1,5 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, g
+from flask_cors import CORS
 import joblib
 import numpy as np
 import pandas as pd
@@ -7,6 +8,7 @@ import firebase_admin
 from firebase_admin import credentials, db
 import json
 from datetime import datetime
+import sqlite3
 
 # Load model klasifikasi
 try:
@@ -23,11 +25,43 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Inisialisasi Flask
 app = Flask(__name__)
+CORS(app)
 
 cred = credentials.Certificate("rf-bioflok-firebase-adminsdk-fbsvc-617560ca39.json")
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://rf-bioflok-default-rtdb.asia-southeast1.firebasedatabase.app/sensor.json'
 })
+
+
+DATABASE = 'log_data.db'
+
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+    return db
+
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
+
+def init_db():
+    with app.app_context():
+        db = get_db()
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                suhu REAL,
+                ph REAL,
+                kekeruhan REAL,
+                status TEXT
+            )
+        ''')
+        db.commit()
+        logging.info("Tabel logs siap digunakan.")
 
 
 # Endpoint untuk halaman utama
@@ -84,19 +118,58 @@ def get_firebase_data():
         classification_prediction = classification_model.predict(features)[0]
         regression_prediction = regression_model.predict(features)[0]
 
+        # Simpan ke SQLite
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        db_conn = get_db()
+        db_conn.execute(
+            'INSERT INTO logs (timestamp, suhu, ph, kekeruhan, status) VALUES (?, ?, ?, ?, ?)',
+            (timestamp, data['suhu'], data['ph'], data['kekeruhan'], str(classification_prediction))
+        )
+        db_conn.commit()
+
         result = {
             'raw_data': data,
             'classification': str(classification_prediction),
             'regression': round(float(regression_prediction), 2),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': timestamp
         }
 
-        print("Response to frontend:", json.dumps(result, indent=2))  # debug ke terminal
         return jsonify(result)
 
     except Exception as e:
         logging.error(f"Error saat mengambil data dari Firebase: {e}", exc_info=True)
         return jsonify({'error': 'Gagal ambil data dari Firebase'}), 500
+
+@app.route('/firebase-logs', methods=['GET'])
+def get_firebase_logs_sqlite():
+    try:
+        db_conn = get_db()
+        cursor = db_conn.execute(
+            'SELECT timestamp, suhu, ph, kekeruhan, status FROM logs ORDER BY timestamp DESC LIMIT 50'
+        )
+        rows = cursor.fetchall()
+
+        logs = []
+        for row in rows:
+            try:
+                tanggal, waktu = row[0].split(' ')
+                logs.append({
+                    'date': tanggal,
+                    'time': waktu[:5],
+                    'temperature': row[1],
+                    'ph': row[2],
+                    'turbidity': row[3],
+                    'status': row[4]
+                })
+            except Exception as e:
+                logging.warning(f"Kesalahan format data log: {row} -> {e}")
+
+        return jsonify(logs)
+
+    except Exception as e:
+        logging.error(f"Gagal ambil log dari SQLite: {e}", exc_info=True)
+        return jsonify({'error': 'Gagal ambil data log dari database'}), 500
+
 
 # Endpoint untuk prediksi klasifikasi
 @app.route('/predict', methods=['POST'])
@@ -121,87 +194,18 @@ def predict():
         print(f"Error pada prediksi klasifikasi: {e}")
         return jsonify({'error': 'Terjadi kesalahan saat memproses prediksi.'}), 500
 
-# Endpoint untuk prediksi regresi
-@app.route('/predict-regression', methods=['POST'])
-def predict_regression():
-    try:
-        data = request.get_json()
-        print(f"Data diterima untuk regresi: {data}")
 
-        required_keys = ['temperature', 'ph', 'turbidity']
-        if not all(key in data for key in required_keys):
-            return jsonify({'error': 'Data tidak lengkap. Harus berisi temperature, ph, dan turbidity.'}), 400
 
-        features = pd.DataFrame([[data['temperature'], data['ph'], data['turbidity']]],
-                               columns=['temperature', 'ph', 'turbidity'])
+@app.route('/index')
+def index_page():
+    return render_template('index.html')
 
-        prediction = regression_model.predict(features)[0]
-        print(f"Hasil prediksi regresi: {prediction}")
+@app.route('/log-data')
+def log_data_page():
+    return render_template('log data.html')
 
-        return jsonify({'turbidity_level': round(float(prediction), 2)})
-
-    except Exception as e:
-        print(f"Error pada prediksi regresi: {e}")
-        return jsonify({'error': 'Terjadi kesalahan saat memproses prediksi regresi.'}), 500
-
-# Endpoint untuk prediksi 30 hari ke depan menggunakan klasifikasi
-@app.route('/predict-30-days', methods=['POST'])
-def predict_30_days():
-    try:
-        data = request.get_json()
-        logging.info(f"Data diterima untuk prediksi 30 hari klasifikasi: {data}")
-
-        required_keys = ['temperature', 'ph', 'turbidity']
-        if not all(key in data for key in required_keys):
-            logging.error("Data tidak lengkap. Harus berisi temperature, ph, dan turbidity.")
-            return jsonify({'error': 'Data tidak lengkap. Harus berisi temperature, ph, dan turbidity.'}), 400
-
-        predictions = []
-        for i in range(30):
-            temp = data['temperature'] + np.random.uniform(-1, 1)
-            ph = data['ph'] + np.random.uniform(-0.2, 0.2)
-            turbidity = data['turbidity'] + np.random.uniform(-0.5, 0.5)
-
-            features = pd.DataFrame([[temp, ph, turbidity]],
-                                   columns=['temperature', 'ph', 'turbidity'])
-            prediction = classification_model.predict(features)[0]
-            predictions.append({'day': i + 1, 'label': str(prediction)})
-
-        logging.info(f"Hasil prediksi 30 hari klasifikasi: {predictions}")
-        return jsonify(predictions)
-
-    except Exception as e:
-        logging.error(f"Error pada prediksi 30 hari klasifikasi: {e}", exc_info=True)
-        return jsonify({'error': 'Terjadi kesalahan saat memproses prediksi 30 hari.'}), 500
-
-@app.route('/predict-30-days-regression', methods=['POST'])
-def predict_30_days_regression():
-    try:
-        data = request.get_json()
-        logging.info(f"Data diterima untuk prediksi 30 hari regresi: {data}")
-
-        required_keys = ['temperature', 'ph', 'turbidity']
-        if not all(key in data for key in required_keys):
-            logging.error("Data tidak lengkap. Harus berisi temperature, ph, dan turbidity.")
-            return jsonify({'error': 'Data tidak lengkap. Harus berisi temperature, ph, dan turbidity.'}), 400
-
-        predictions = []
-        for i in range(30):
-            temp = data['temperature'] + np.random.uniform(-1, 1)
-            ph = data['ph'] + np.random.uniform(-0.2, 0.2)
-            turbidity = data['turbidity'] + np.random.uniform(-0.5, 0.5)
-
-            features = pd.DataFrame([[temp, ph, turbidity]],
-                                  columns=['temperature', 'ph', 'turbidity'])
-            prediction = regression_model.predict(features)[0]
-            predictions.append({'day': i + 1, 'turbidity_level': round(float(prediction), 2)})
-
-        logging.info(f"Hasil prediksi 30 hari regresi: {predictions}")
-        return jsonify(predictions)
-
-    except Exception as e:
-        logging.error(f"Error pada prediksi 30 hari regresi: {e}", exc_info=True)
-        return jsonify({'error': 'Terjadi kesalahan saat memproses prediksi 30 hari regresi.'}), 500
 
 if __name__ == '__main__':
+    init_db()
     app.run(debug=True)
+    
